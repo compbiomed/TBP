@@ -2,9 +2,8 @@
 title: "Tuberculosis Progression Signature Identification and Classification Model"
 output: html_notebook
 author:
-- Samantha Leong, Yue Zhao, W. Evan Johnson, Padmini Salgame
-- Computational Biomedicine, Boston University
-- Rutgers University
+- Yue Zhao
+- Section of Computational Biomedicine, Boston University School of Medicine
 date: "`r format(Sys.time(), '%d %B %Y')`"
 
 ---
@@ -12,9 +11,6 @@ date: "`r format(Sys.time(), '%d %B %Y')`"
 
 
 ##### Note: Please click the "Code" button in upper right corner, and choose "Hide All Code"
-
-### Abstract
-We are trying to model the Tuberculosis progression from RNA-seq expression in different sample groups. By using differential expression we filtered the differentially expressed genes as pool for potential signature genes, then we used 'days to progression' as target to model the regression process of TB using elastic net. Regression result provides the signature genes for TB progression, then we used identified signature genes to train classification model using random forest. We compared our regression and classfication accuracy with another progression 16-gene signature published earlier this year, and our signature performed much better in both regression and classfication tasks. Further enrichment analysis may shed light on mechanism behind TB progression.
 
 ### Introduction
 
@@ -25,15 +21,15 @@ We are trying to model the Tuberculosis progression from RNA-seq expression in d
 
 * Data:
     + Africa Baseline: 142 samples (39 progressors, 103 controls)
-    + Brazil.1 (progressor vs. non-progressor): 21 samples (15 progressors, 6 controls)
-    + Brazil.2 (TB vs. non-progressor): 16 samples (10 progressors, 6 controls)
+    + Brazil.1 (progressor vs. non-progressor): 37 samples (16 progressors, 21 non-progressor)
+    + Brazil.2 (TB vs. LTBI): 35 samples (14 TB, 21 LTBI)
 
 * Pipeline
     + get africa signatures from Africa dataset
     + batch correct africa + brazil.1, africa + brazil.2
     + train classification models on batch corrected africa dataset and then predict brazil.1 and brazil.2
 
-#### Load Name.RData and Win/Mac specific packages
+#### Load Name.RData and packages
 ```{r}
 # source a folder
 sourceDir <- function(path, trace = TRUE, ...) {
@@ -43,26 +39,10 @@ sourceDir <- function(path, trace = TRUE, ...) {
          if(trace) cat("\n")
       }
 }
-# R lab jason
-# for Mac:
-sourceDir("/Users/yuezhao/Google Drive File Stream/My Drive/projects/R_lib_jason/")
-# for win:
-sourceDir("/My Drive/projects/R_lib_jason/")
-require(doParallel)
+# R_lab_jason is a folder of functions that I often use.
+# download at: https://github.com/jasonzhao0307/R_lib_jason
+sourceDir("path.to.R_lib_jason/")
 
-# load data by readRDS
-tb.data.list <- readRDS("../TBP/tb_data_list.rds")
-
-
-
-
-
-# OR:
-load("../TBP_v1.RData")
-
-
-# Also, before leaving the current environment, do:
-save.image("../TBP_v1.RData")
 
 ```
 
@@ -156,22 +136,29 @@ Get_Classification_Threshold <- function(predict, response) {
 }
 
 # input a vector of predicted probability and true label, output sensitivity and specificity at best cut-off.
-Get_Sensitivity_And_Specificity <- function(predict, response){
-  prob.cutoff <- Get_Classification_Threshold(predict, response)
-  pred <- factor(ifelse(predict > prob.cutoff, 1, 0) )
-  cm = confusionMatrix(pred, response)
+Get_Sensitivity_And_Specificity <- function(predict, response, provide.cutoff = FALSE, cutoff.value = 0.5){
+  if (provide.cutoff == FALSE){
+    prob.cutoff <- Get_Classification_Threshold(predict, response)
+  } else{
+    prob.cutoff <- cutoff.value
+  }
+
+  pred <- ifelse(predict > prob.cutoff, 1, 0)
+  # Must specify which class is positive !!!
+  # also, in this case, we need to use character.
+  cm = confusionMatrix(as.character(pred), as.character(response), positive = "1")
   sensi <- cm$byClass[1]
   speci <- cm$byClass[2]
   return(list(sensi=sensi,speci=speci))
 }
 
 # input a list of predicted probability and true label, output sensitivity and specificity at best cut-off.
-Get_Sensitivity_And_Specificity_List <- function(predict.list, response.list){
+Get_Sensitivity_And_Specificity_List <- function(predict.list, response.list, provide.cutoff = FALSE, cutoff.value = 0.5){
 
   sen.vec <- c()
   spe.vec <- c()
   for (i in 1:length(predict.list)){
-    tmp <- Get_Sensitivity_And_Specificity(predict.list[[i]], response.list[[i]])
+    tmp <- Get_Sensitivity_And_Specificity(predict.list[[i]], response.list[[i]], provide.cutoff, cutoff.value)
     sen.vec[i] <- tmp$sensi
     spe.vec[i] <- tmp$speci
   }
@@ -184,7 +171,7 @@ Get_Sensitivity_And_Specificity_List <- function(predict.list, response.list){
 # input a eva list, output average value, confidance interval for:
 # AUC
 # sensitivity & specificity at the best prob cut-off where maximazing sen+spe
-Get_Classification_Evaluation <- function(eva.list, response.list){
+Get_Classification_Evaluation <- function(eva.list, response.list, provide.cutoff = FALSE, cutoff.value = 0.5){
   df.output <- NULL
 
   auc.glmnet <- sapply(eva.list, function(x) x$glmnet$`testing set AUC`)
@@ -198,22 +185,22 @@ Get_Classification_Evaluation <- function(eva.list, response.list){
   prob.xgbLinear <- lapply(eva.list, function(x) x$xgbLinear$probabilities)
 
   # glmnet
-  tmp <- Get_Sensitivity_And_Specificity_List(prob.glmnet, response.list)
+  tmp <- Get_Sensitivity_And_Specificity_List(prob.glmnet, response.list, provide.cutoff, cutoff.value)
   row.glmnet <- c(mean(auc.glmnet), ci(auc.glmnet)[2], ci(auc.glmnet)[3], mean(tmp$sen.vec), ci(tmp$sen.vec)[2], ci(tmp$sen.vec)[3], mean(tmp$spe.vec), ci(tmp$spe.vec)[2], ci(tmp$spe.vec)[3])
   df.output <- rbind(df.output, row.glmnet)
 
   # svm
-  tmp <- Get_Sensitivity_And_Specificity_List(prob.svm, response.list)
+  tmp <- Get_Sensitivity_And_Specificity_List(prob.svm, response.list, provide.cutoff, cutoff.value)
   row.svm <- c(mean(auc.svm), ci(auc.svm)[2], ci(auc.svm)[3], mean(tmp$sen.vec), ci(tmp$sen.vec)[2], ci(tmp$sen.vec)[3], mean(tmp$spe.vec), ci(tmp$spe.vec)[2], ci(tmp$spe.vec)[3])
   df.output <- rbind(df.output, row.svm)
 
   # ranger
-  tmp <- Get_Sensitivity_And_Specificity_List(prob.ranger, response.list)
+  tmp <- Get_Sensitivity_And_Specificity_List(prob.ranger, response.list, provide.cutoff, cutoff.value)
   row.ranger <- c(mean(auc.ranger), ci(auc.ranger)[2], ci(auc.ranger)[3], mean(tmp$sen.vec), ci(tmp$sen.vec)[2], ci(tmp$sen.vec)[3], mean(tmp$spe.vec), ci(tmp$spe.vec)[2], ci(tmp$spe.vec)[3])
   df.output <- rbind(df.output, row.ranger)
 
   # xgbLinear
-  tmp <- Get_Sensitivity_And_Specificity_List(prob.xgbLinear, response.list)
+  tmp <- Get_Sensitivity_And_Specificity_List(prob.xgbLinear, response.list, provide.cutoff, cutoff.value)
   row.xgbLinear <- c(mean(auc.xgbLinear), ci(auc.xgbLinear)[2], ci(auc.xgbLinear)[3], mean(tmp$sen.vec), ci(tmp$sen.vec)[2], ci(tmp$sen.vec)[3], mean(tmp$spe.vec), ci(tmp$spe.vec)[2], ci(tmp$spe.vec)[3])
   df.output <- rbind(df.output, row.xgbLinear)
 
@@ -475,7 +462,9 @@ Svaseq_Adjust <- function(df, target.vec){
 #First, load the data and make sure it's formatted well
 # Lancet paper 16-gene biomarker
 lancet.biomarker <- c("ANKRD22", "APOL1", "BATF2", "ETV7", "FCGR1A", "FCGR1B", "GBP1", "GBP2", "GBP4", "GBP5", "SCARF1", "SEPT4", "SERPING1", "STAT1", "TAP1", "TRAFD1")
-
+tb.signature.list <- readRDS("../tb.signature.rds")
+tb.signature.list[[6]] <- c("FCGR1A", "HK3", "RAB13", "RBBP8", "IFI44L", "TIMM10", "BCL6", "SMARCD3", "CYP4F3", "SLPI")
+names(tb.signature.list)[6] <- "sambarey"
 ############ Africa data #############################
 counts.africa.progressor <- read.table("../data/count_africa_progressor.txt",header=TRUE,row.names=1)
 counts.africa.control <- read.table("../data/counts_africa_control.txt",header=TRUE,row.names=1)
@@ -568,8 +557,12 @@ counts.brazil.old <- read.table("../data/counts_brazil_old.txt",header=TRUE,row.
 #remove TST5, tst7, tst9, and other IC from brazil.old
 counts.brazil.old.TBvsLTBI <- counts.brazil.old[,-c(35,37,39, 1:19)]
 counts.brazil.old <- counts.brazil.old[,-c(seq(20,29,1), 35, 37, 39,11,12,10,17)]
+counts.brazil.old.9 <- counts.brazil.old[,-c(seq(20,29,1), 11,12,10,17)]
+counts.brazil.old.TBvsLTBI.more <- counts.brazil.old[,c(11,12,17,10,20:33, 35:39)]
 #Sample TSTplus-4 has been shifted into the G1 group
 colnames(counts.brazil.old)[20] <- 'G1.10L001'
+colnames(counts.brazil.old.9)[20] <- 'G1.10L001'
+
 #remove other characters
 for (i in 1:ncol(counts.brazil.old)){
   if (grepl("L001",colnames(counts.brazil.old)[i])) {
@@ -577,12 +570,46 @@ for (i in 1:ncol(counts.brazil.old)){
     colnames(counts.brazil.old)[i] <- gsub('plus','',colnames(counts.brazil.old)[i])
   }
 }
+
+for (i in 1:ncol(counts.brazil.old.9)){
+  if (grepl("L001",colnames(counts.brazil.old.9)[i])) {
+    colnames(counts.brazil.old.9)[i] <- gsub('L001','',colnames(counts.brazil.old.9)[i])
+    colnames(counts.brazil.old.9)[i] <- gsub('plus','',colnames(counts.brazil.old.9)[i])
+  }
+}
+
+for (i in 1:ncol(counts.brazil.old.TBvsLTBI.more)){
+  if (grepl("L001",colnames(counts.brazil.old.TBvsLTBI.more)[i])) {
+    colnames(counts.brazil.old.TBvsLTBI.more)[i] <- gsub('L001','',colnames(counts.brazil.old.TBvsLTBI.more)[i])
+    colnames(counts.brazil.old.TBvsLTBI.more)[i] <- gsub('plus','',colnames(counts.brazil.old.TBvsLTBI.more)[i])
+  }
+}
+
 # order by treatments
 counts.brazil.old <- counts.brazil.old[,c(1:9, 20, 10:15,17:19, 21:22, 16)]
 treatments.brazil.old <- c(rep("progressor",16),rep("control",6))
 gender.brazil.old <- c("Female","Female", "Male", "Female", "Male","Male","Female", "Female", "Female", "Female", "Male", "Female","Female","Female","Female","Male","Female","Male", "Male", "Female", "Female","Female")
 
-gender.brazil.old.num <- gender.brazil.old
+
+counts.brazil.old.9 <- counts.brazil.old.9[,c(1:9, 20, 10:15,17:19, 21:25, 16)]
+treatments.brazil.old.9 <- c(rep("progressor",16),rep("control",9))
+treatments.brazil.old.9.num <- treatments.brazil.old.9
+treatments.brazil.old.9.num[treatments.brazil.old.9.num == "progressor"] <- 1
+treatments.brazil.old.9.num[treatments.brazil.old.9.num == "control"] <- 0
+gender.brazil.old.9 <- c("Female","Female", "Male", "Female", "Male","Male","Female", "Female", "Female", "Female", "Male", "Female","Female","Female","Female","Male","Female","Male", "Male", "Male", "Female", "Female","Female", "Male", "Female")
+d2p.brazil.old.9 <- c(1130, 1534, 237, 855, 589, 1003, 272, 732,234, 1795, 102, 29, 36, 43, 11, 71, rep(4000, 9))
+
+
+
+treatments.brazil.TBvs.LTBI.more <- c(rep("TB",14),rep("control",9))
+treatments.brazil.TBvs.LTBI.more.num <- treatments.brazil.TBvs.LTBI.more
+treatments.brazil.TBvs.LTBI.more.num[treatments.brazil.TBvs.LTBI.more.num == "TB"] <- 1
+treatments.brazil.TBvs.LTBI.more.num[treatments.brazil.TBvs.LTBI.more.num == "control"] <- 0
+
+
+
+
+gender.brazil.old.num <- gender.brazil.old.9
 gender.brazil.old.num[gender.brazil.old.num == "Male"] <- 1
 gender.brazil.old.num[gender.brazil.old.num == "Female"] <- 0
 gender.brazil.old.num <- as.numeric(gender.brazil.old.num)
@@ -607,19 +634,65 @@ treatments.brazil.old.TBvsLTBI.num <- treatments.brazil.old.TBvsLTBI
 treatments.brazil.old.TBvsLTBI.num[treatments.brazil.old.TBvsLTBI.num == "TB"] <- 1
 treatments.brazil.old.TBvsLTBI.num[treatments.brazil.old.TBvsLTBI.num == "control"] <- 0
 
+
+
+
+age.brazil.old.9 <- c(72,41,19,58,20,15,19,6,51,24,34,59,57,1,4,17,7,24,6,9,5,16,2,7,45)
+
+
+
+
+# demographic
+chisq.test(table(treatments.brazil.old.9.num, gender.brazil.old.num))
+tmp <- data.frame(gender = gender.brazil.old.num, target = treatments.brazil.old.9.num, age = age.brazil.old.9)
+tmp.glm <- glm(target~gender, tmp, family = binomial())
+summary(tmp.glm)
+tmp.glm <- glm(target~age, tmp, family = binomial())
+summary(tmp.glm)
+
+
+
+
+# TB vs. LTBI
+gender.brazil.tbvsltbi <- c(0,0,1,1,1,1,1,1,1,1,1,1,0,1,0,0,1,1, 1,0,0,0,1)
+age.brazil.tbvsltbi <- c(15, 15, 42, 15, 47, 57, 26, 49, 22, 59, 63, 46, 48, 43,45,7,24,6,9,5,16,2,7)
+tmp <- data.frame(gender = gender.brazil.tbvsltbi, target = treatments.brazil.TBvs.LTBI.more.num, age = age.brazil.tbvsltbi)
+tmp.glm <- glm(target~gender, tmp, family = binomial())
+summary(tmp.glm)
+tmp.glm <- glm(target~age, tmp, family = binomial())
+summary(tmp.glm)
+
+
+table(gender.brazil.tbvsltbi, treatments.brazil.TBvs.LTBI.more.num)
+
 ```
 
 #### Load metadata
 ```{r}
-### Brazil
-meta.brazil <- tb.data.list$meta.brazil.old
+## brazil
+meta.brazil <- read.table("../metadata/Brazil_metadata.txt", sep = "\t", header = TRUE, row.names = 1, stringsAsFactors = FALSE)
+meta.brazil$Sample <- rownames(meta.brazil)
+# progressors could include SC or not
+meta.brazil$Label[meta.brazil$Label == "Control"] <- "control"
+meta.brazil$Label.Binary.WithSC <- meta.brazil$Label
+meta.brazil$Label.Binary.WithoutSC <- meta.brazil$Label
+meta.brazil$Label.Binary.WithSC[meta.brazil$Label != "control"] <- "progressor"
+meta.brazil$Label.Binary.WithoutSC[meta.brazil$Label == "P"] <- "progressor"
+meta.brazil$Label.Binary.WithoutSC[meta.brazil$Label == "SC"] <- NA
 
-
+#tibble
+meta.brazil <- as.tibble(meta.brazil)
+colnames(meta.brazil)[1] <- "Sex"
 ### #####
 #Africa
 meta.africa <- read.csv("../metadata/africa_metadata/metadata_africa.csv", header = T, stringsAsFactors = FALSE, row.names = 1)
+
+# remove sample 49
+meta.africa <- meta.africa[-49,]
+
 rownames(meta.africa) <- meta.africa$Sample
 meta.africa <- as.tibble(meta.africa)
+
 meta.africa.baseline <- meta.africa %>% filter(Sample %in% colnames(counts.africa.baseline))
 meta.africa.baseline$D2P <- d2p.africa.baseline[match(meta.africa.baseline$Sample, colnames(counts.africa.baseline))]
 meta.africa.baseline$Label[meta.africa.baseline$Label == "case"] <- "progressor"
@@ -628,19 +701,48 @@ meta.africa.baseline$batch = "africa"
 
 
 # cut age into bins
-age.vec <- c( meta.africa.baseline$Age)
-# how to cut? 4 bins.
+age.vec <- c(meta.brazil$Age, meta.africa.baseline$Age)
+# how to cut? 4 bins. 
 levels.age <- levels(cut(age.vec, breaks = 4))
 # ordinal factor
 age.vec.factor <- as.factor(as.numeric(cut(age.vec, breaks = 4)))
-meta.africa.baseline$Age.Bin <- age.vec.factor
+meta.brazil$Age.Bin <- age.vec.factor[1:nrow(meta.brazil)]
+meta.africa.baseline$Age.Bin <- age.vec.factor[(nrow(meta.brazil)+1):length(age.vec.factor)]
 
+# rename meta.brazil Sample name
+meta.brazil$Sample[meta.brazil$batch == "old"] <- paste0(meta.brazil$Sample[meta.brazil$batch == "old"], ".old")
 
 
 # reorder the metadata to counts data
+meta.brazil <- meta.brazil[match(colnames(counts.brazil.all), meta.brazil$Sample),]
+meta.africa <- meta.africa[match(colnames(counts.africa), meta.africa$Sample),]
+meta.africa$Label[meta.africa$Label == "case"] <- "progressor"
 meta.africa.baseline <- meta.africa.baseline[match(colnames(counts.africa.baseline), meta.africa.baseline$Sample),]
 
+
+# new and old brazil metadata
+
+meta.brazil.old <- meta.brazil %>% filter(batch == "old")
+meta.brazil.new <- meta.brazil %>% filter(batch == "new")
+
+
 ######### without SC
+
+# num label
+meta.brazil.new$Label.Binary.WithSC.num <- meta.brazil.new$Label.Binary.WithSC
+meta.brazil.new$Label.Binary.WithSC.num[meta.brazil.new$Label.Binary.WithSC.num == "progressor"] <- 1
+meta.brazil.new$Label.Binary.WithSC.num[meta.brazil.new$Label.Binary.WithSC.num == "control"] <- 0
+meta.brazil.new$Label.Binary.WithSC.num <- as.numeric(meta.brazil.new$Label.Binary.WithSC.num)
+
+meta.brazil.old$Label.Binary.WithSC.num <- meta.brazil.old$Label.Binary.WithSC
+meta.brazil.old$Label.Binary.WithSC.num[meta.brazil.old$Label.Binary.WithSC.num == "progressor"] <- 1
+meta.brazil.old$Label.Binary.WithSC.num[meta.brazil.old$Label.Binary.WithSC.num == "control"] <- 0
+meta.brazil.old$Label.Binary.WithSC.num <- as.numeric(meta.brazil.old$Label.Binary.WithSC.num)
+
+meta.brazil$Label.Binary.WithSC.num <- meta.brazil$Label.Binary.WithSC
+meta.brazil$Label.Binary.WithSC.num[meta.brazil$Label.Binary.WithSC.num == "progressor"] <- 1
+meta.brazil$Label.Binary.WithSC.num[meta.brazil$Label.Binary.WithSC.num == "control"] <- 0
+meta.brazil$Label.Binary.WithSC.num <- as.numeric(meta.brazil$Label.Binary.WithSC.num)
 
 meta.africa.baseline <- meta.africa.baseline %>% mutate(Label.num = Label)
 meta.africa.baseline$Label.num[meta.africa.baseline$Label.num == "progressor"] <- 1
@@ -649,11 +751,17 @@ meta.africa.baseline$Label.num <- as.numeric(meta.africa.baseline$Label.num)
 
 
 
-### we will only use coding genes for signature
-genename.dict <- Get_Gene_Mapping_Dict(filter = "hgnc_symbol", gene.name = rownames(tb.data.list$df.africa))
+
+### we will only use coding genes for signature, so we need to know which genes are coding genes
+genename.dict <- Get_Gene_Mapping_Dict(filter = "hgnc_symbol", gene.name = rownames(counts.brazil.new))
 genename.dict <- genename.dict[!duplicated(genename.dict$hgnc_symbol),]
 genename.dict <- genename.dict[genename.dict$gene_biotype == "protein_coding",]
 
+
+
+
+### output africa data for Ethel
+meta.africa$D2P <- d2p.africa
 
 
 ```
@@ -661,8 +769,8 @@ genename.dict <- genename.dict[genename.dict$gene_biotype == "protein_coding",]
 #### DE analysis
 ```{r message=FALSE}
 de.africa.baseline <- DeAnalysis(df = counts.africa.baseline.filtered, treatments = meta.africa.baseline$Label, gender = meta.africa.baseline$Sex, age = "SAME")
-de.brazil.old <- DeAnalysis(df = counts.brazil.old.filtered, treatments = meta.brazil$Label.Binary.WithSC, gender = meta.brazil$Sex)
-
+de.brazil <- DeAnalysis(df = counts.brazil.old.filtered, treatments = meta.brazil$Label.Binary.WithSC, gender = meta.brazil$Sex)
+de.brazil.9 <- DeAnalysis(df = counts.brazil.old.9.filtered, treatments = treatments.brazil.old.9, gender = gender.brazil.old.9)
 
 # DEG in africa.baseline
 deg.africa.baseline.5em1 <- GetDEG(de.africa.baseline, 5e-1)
@@ -674,14 +782,13 @@ deg.africa.baseline.1em5 <- GetDEG(de.africa.baseline, 1e-5)
 deg.africa.baseline.1em6 <- GetDEG(de.africa.baseline, 1e-6)
 
 # DEG in brazil.old
-deg.brazil.old.5em1 <- GetDEG(de.brazil.old, 5e-1)
-deg.brazil.old.1em1 <- GetDEG(de.brazil.old, 1e-1)
-deg.brazil.old.1em2 <- GetDEG(de.brazil.old, 1e-2)
-deg.brazil.old.1em3 <- GetDEG(de.brazil.old, 1e-3)
-deg.brazil.old.1em4 <- GetDEG(de.brazil.old, 1e-4)
-deg.brazil.old.1em5 <- GetDEG(de.brazil.old, 1e-5)
-deg.brazil.old.1em6 <- GetDEG(de.brazil.old, 1e-6)
-
+deg.brazil.5em1 <- GetDEG(de.brazil, 5e-1)
+deg.brazil.1em1 <- GetDEG(de.brazil, 1e-1)
+deg.brazil.1em2 <- GetDEG(de.brazil, 1e-2)
+deg.brazil.1em3 <- GetDEG(de.brazil, 1e-3)
+deg.brazil.1em4 <- GetDEG(de.brazil, 1e-4)
+deg.brazil.1em5 <- GetDEG(de.brazil, 1e-5)
+deg.brazil.1em6 <- GetDEG(de.brazil, 1e-6)
 
 ```
 
@@ -711,6 +818,63 @@ counts.brazil.old.norm <- deseq2_norm_rle(counts.brazil.old.filtered)
 counts.brazil.old.TBvsLTBI.filtered <- MaxFilter(counts.brazil.old.TBvsLTBI, 5)
 # Normalization
 counts.brazil.old.TBvsLTBI.norm <- deseq2_norm_rle(counts.brazil.old.TBvsLTBI.filtered)
+
+
+
+##
+# Max 5 filter.
+counts.brazil.old.9.filtered <- MaxFilter(counts.brazil.old.9, 5)
+# Normalization
+counts.brazil.old.9.norm <- deseq2_norm_rle(counts.brazil.old.9.filtered)
+
+
+# Max 5 filter.
+counts.brazil.old.TBvsLTBI.more.filtered <- MaxFilter(counts.brazil.old.TBvsLTBI.more, 5)
+# Normalization
+counts.brazil.old.TBvsLTBI.more.norm <- deseq2_norm_rle(counts.brazil.old.TBvsLTBI.more.filtered)
+
+#####################
+### NEW brazil
+
+counts.brazil.all.tb.vs.ltbi <- Cbind_Df(counts.brazil.old.TBvsLTBI.more, counts.brazil.new[,1:12])
+# Max 5 filter.
+counts.brazil.all.tb.vs.ltbi.filtered <- MaxFilter(counts.brazil.all.tb.vs.ltbi, 5)
+# Normalization
+counts.brazil.all.tb.vs.ltbi.norm <- deseq2_norm_rle(counts.brazil.all.tb.vs.ltbi.filtered)
+
+counts.brazil.all.tb.vs.ltbi.combat <- Combat_No_Ref(df = counts.brazil.all.tb.vs.ltbi.norm, batch = c(rep("old", 23), rep("new", 12)),first = "old", mean.only = T)
+
+
+counts.africa.brazil.tb.vs.ltbi.new <- Cbind_Df(counts.africa.baseline.filtered[,-c(34,64)], counts.brazil.all.tb.vs.ltbi.combat$all)
+counts.africa.brazil.tb.vs.ltbi.new.norm <- deseq2_norm_rle(counts.africa.brazil.tb.vs.ltbi.new)
+
+
+counts.africa.brazil.tb.vs.ltbi.new.combat <- Combat_No_Ref(df = counts.africa.brazil.tb.vs.ltbi.new.norm, batch = c(rep("africa", 142), rep("brazil", 35)),first = "africa", mean.only = F)
+
+
+
+df.train.tb.vs.ltbi.new = counts.africa.brazil.tb.vs.ltbi.new.combat$a
+df.test.tb.vs.ltbi.new = counts.africa.brazil.tb.vs.ltbi.new.combat$b
+
+
+
+
+
+
+##### for manuscript
+
+counts.brazil.processed <- cbind(counts.brazil.old, counts.brazil.old.TBvsLTBI.more[,1:14])
+# Max 5 filter.
+counts.brazil.processed.filtered <- MaxFilter(counts.brazil.processed, 5)
+# Normalization
+counts.brazil.processed.filtered.norm <- deseq2_norm_rle(counts.brazil.processed.filtered)
+#
+write.csv(counts.brazil.processed.filtered.norm, "counts_brazil_normalized.csv", quote = FALSE)
+
+
+
+
+
 
 
 
@@ -748,9 +912,10 @@ signature.africa <- getSignatureFromMultipleGlmnet(dataFrame = counts.africa.bas
 signature.africa <- signature.africa[which(signature.africa %in% genename.dict$hgnc_symbol)]
 
 
+
 ```
 
-#### data adjustment for evaluation
+#### evaluation
 ```{r}
 ### progressor vs. non-progressor
 ############################
@@ -798,59 +963,375 @@ counts.africa.brazil.TBvsLTBI <- Combat_No_Ref(df = counts.africa.brazil.old.TBv
 df.train.2 = counts.africa.brazil.TBvsLTBI$a
 df.test.2 = counts.africa.brazil.TBvsLTBI$b
 
+
+
+
+#################################################################
+####
+#brazil.old.9
+counts.africa.brazil.old.9 <- Cbind_Df(counts.africa.baseline.filtered[,-c(34,64)], counts.brazil.old.9.filtered)
+counts.africa.brazil.old.9.norm <- deseq2_norm_rle(counts.africa.brazil.old.9)
+
+
+############################
+#2. Combat                 #
+############################
+counts.africa.brazil.9 <- Combat_No_Ref(df = counts.africa.brazil.old.9.norm, batch = c(rep("africa", 142), rep("brazil", 25)),first = "africa", mean.only = F)
+
+df.train.9 = counts.africa.brazil.9$a
+df.test.9 = counts.africa.brazil.9$b
+
+
+
+
+###########
+#brazil.old.TBvsLTBI.more
+counts.africa.brazil.old.TBvsLTBI.more <- Cbind_Df(counts.africa.baseline.filtered[,-c(34,64)], counts.brazil.old.TBvsLTBI.more.filtered)
+counts.africa.brazil.old.TBvsLTBI.more.norm <- deseq2_norm_rle(counts.africa.brazil.old.TBvsLTBI.more)
+
+
+############################
+#2. Combat                 #
+############################
+counts.africa.brazil.old.TBvsLTBI.more.combat <- Combat_No_Ref(df = counts.africa.brazil.old.TBvsLTBI.more.norm, batch = c(rep("africa", 142), rep("brazil", 23)),first = "africa", mean.only = F)
+
+df.train.TBvsLTBI = counts.africa.brazil.old.TBvsLTBI.more.combat$a
+df.test.TBvsLTBI = counts.africa.brazil.old.TBvsLTBI.more.combat$b
+
+
+
+
+
+
+
+
+
 ```
 
-#### 29-gene signature in Brazil
+
+#### alignment stats
 ```{r}
-de.brazil.29gene <- as.data.frame(de.brazil.old[tb.data.list$signature.africa,])
+brazil.alignment <- read.table("QC/alignment_brazil_collapsed.txt", sep = "\t", header = T, stringsAsFactors = FALSE)
+
+####
+africa.alignment <- read.table("QC/alignment_africa.txt", sep = "\t", header = T, stringsAsFactors = FALSE)
+for (i in 1:nrow(africa.alignment)){
+  africa.alignment$Proportion[i] <- str_match(africa.alignment$Proportion[i], "(.+)%")[2]
+}
+mean(as.numeric(africa.alignment$Proportion))
+
+mean(brazil.alignment$Aligned.Reads)
+sd(brazil.alignment$Aligned.Reads)
+```
+
+
+### regression
+```{r}
+
+cor.africa.list <- list()
+cor.zak.list <- list()
+
+for (i in 1:30){
+  d2p.train <- meta.africa.baseline$D2P
+  d2p.test <- d2p.brazil.old.9
+  d2p.train[meta.africa.baseline$D2P == 4000] <- 2000 + 500*i
+  d2p.test[d2p.brazil.old.9 == 4000] <- 2000 + 500*i
+  cor.africa.list[[i]] <- Model_Regression_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.9, y.train = d2p.train, df.test = df.test.9, y.test = d2p.test, signature = signature.africa, seed = 1)
+  cor.zak.list[[i]] <- Model_Regression_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.9, y.train = d2p.train, df.test = df.test.9, y.test = d2p.test, signature = signature.zak, seed = 1)
+  if (cor.africa.list[[i]]$glmnet$pearson >= 0.7 | cor.africa.list[[i]]$ranger$pearson >= 0.7 | cor.africa.list[[i]]$svmLinear$pearson >= 0.7 | cor.africa.list[[i]]$xgbLinear$pearson >= 0.7 | cor.africa.list[[i]]$glmnet$spearman >= 0.7 | cor.africa.list[[i]]$ranger$spearman >= 0.7 | cor.africa.list[[i]]$svmLinear$spearman >= 0.7 | cor.africa.list[[i]]$xgbLinear$spearman >= 0.7){
+    print("reach 0.7!")
+  }
+}
+
+
+```
+
+
+### Zak signature performance at cut-off 0.8
+```{r}
+output.zak.signature.0.8 <- Get_Classification_Evaluation(eva.list = eva.zak, response.list = y.list, provide.cutoff = TRUE, cutoff.value = 0.8)
+
+```
+
+
+
+
+### Brazil NEW
+
+#### more samples
+```{r}
+require(readxl)
+# metadata
+meta.brazil.new <- read_excel("../data/final_data/Brazil_RNAseq_MS_supplement_demodata_NEWSETFEB2018.xlsx")
+meta.brazil.new <- meta.brazil.new[-c(1,11,16:22, 25:28),c(1,3,4)]
+meta.brazil.new$treatment <- c(rep("control", 13), rep("progressor", 2))
+for (i in 1:nrow(meta.brazil.new)){
+ meta.brazil.new$`Sample alias`[i] <- gsub("\\+", "",meta.brazil.new$`Sample alias`[i])
+ meta.brazil.new$`Sample alias`[i] <- gsub("-", "",meta.brazil.new$`Sample alias`[i])
+}
+
+
+# read counts
+counts.brazil.new <- read.table("../data/final_data/brazil_new", sep = "\t")
+counts.brazil.new <- counts.brazil.new[,c(2,7:11,15:18,21:23,25:26)]
+for (i in 1:ncol(counts.brazil.new)){
+  colnames(counts.brazil.new)[i] <- gsub(".featureCounts", "", colnames(counts.brazil.new)[i])
+}
+counts.brazil.new <- counts.brazil.new[,match(meta.brazil.new$`Sample alias`, colnames(counts.brazil.new) )]
+
+
+
+# outliers: TST74. See PCA in ../data/final_data/outlier/PCA.pdf
+meta.brazil.new <- meta.brazil.new[-5,]
+counts.brazil.new <- counts.brazil.new[,-5]
+
+
+
+meta.brazil.new$treatment.num <- meta.brazil.new$treatment
+meta.brazil.new$treatment.num[meta.brazil.new$treatment.num == "progressor"] <- 1
+meta.brazil.new$treatment.num[meta.brazil.new$treatment.num == "control"] <- 0
+meta.brazil.new$treatment.num <- as.numeric(meta.brazil.new$treatment.num)
+
+```
+
+#### data normalization and batch correction
+```{r}
+
+
+treatment.brazil.all <- c(treatments.brazil.old.9, meta.brazil.new$treatment)
+
+treatment.brazil.all.num <- treatment.brazil.all
+treatment.brazil.all.num[treatment.brazil.all.num == "progressor"] <- 1
+treatment.brazil.all.num[treatment.brazil.all.num == "control"] <- 0
+treatment.brazil.all.num <- as.numeric(treatment.brazil.all.num)
+
+
+
+# Max 5 filter.
+counts.brazil.new.filtered <- MaxFilter(counts.brazil.new, 5)
+
+
+
+
+
+####################
+
+############################
+# REmove 2 progressors from new brazil study
+############################
+
+
+counts.brazil.all <- Cbind_Df(counts.brazil.old.9.filtered, counts.brazil.new.filtered[,-c(13,14)])
+counts.brazil.all.norm <- deseq2_norm_rle(counts.brazil.all)
+counts.brazil.all.norm.combat <- Combat_No_Ref(df = counts.brazil.all.norm, batch = c(rep("brazil_old", 25), rep("brazil_new", 12)),first = "brazil_old", mean.only = T)
+
+
+
+
+
+counts.brazil.all.tb.vs.ltbi.filtered
+counts.brazil.all
+
+counts.brazil.all.51 <- Cbind_Df(counts.brazil.all, counts.brazil.all.tb.vs.ltbi.filtered[,1:14])
+counts.brazil.all.51.norm <- deseq2_norm_rle(counts.brazil.all.51)
+
+# output this dataset:
+write.csv(counts.brazil.all.51.norm, "counts_brazil_all_51_samples.csv")
+
+
+
+### 16 prog, 21 non-prog, 14 TB
+top.deg <- rownames(de.brazil[which(de.brazil$padj < 0.01),])
+df.combined <- Cbind_Df(df.test.2[top.deg,], df.test.tb.vs.ltbi.new[top.deg,1:14])
+
+df.combined <- deseq2_norm_rle(df.combined)
+
+plot_pheatmap(df.combined, c(treatment.brazil.all[-c(38:39)], rep("activeTB", 14)), rowScaling = TRUE, log2Trans = TRUE, colorGroup = c(progressor = "red", control = "green", activeTB = "blue"))
+
+plot_pheatmap(df.combined, c(treatment.brazil.all[-c(38:39)], rep("activeTB", 14)), rowScaling = TRUE, log2Trans = FALSE, colorGroup = c(progressor = "red", control = "green", activeTB = "blue"), showRowName = FALSE, showColName = FALSE, outputPDF = TRUE, title = "Brazil dataset with DEG padj < 0.01", outputName = "Brazil_all_heatmap.pdf")
+
+
+
+plot_PCA_new(counts.brazil.all.norm.combat$all, treatment.brazil.all[-c(38:39)])
+
+
+plot_pheatmap(counts.brazil.all.norm.combat$all[signature.africa,], treatment.brazil.all[-c(38:39)], rowScaling = TRUE, log2Trans = FALSE, outputPDF = T, title = "29-gene signature expression heatmap in Brazil dataset", outputName = "29-gene Brazil Heatmap.pdf")
+
+plot_pheatmap(counts.brazil.all.norm.combat$all[signature.africa,], treatment.brazil.all[-c(38:39)], rowScaling = TRUE, log2Trans = FALSE,showColName = F, outputPDF = T, title = "29-gene signature expression heatmap in Brazil dataset", outputName = "29-gene Brazil Heatmap noColnames.pdf")
+
+plot_PCA_new(counts.brazil.all.norm.combat$all[signature.africa,], treatment.brazil.all[-c(38:39)], title = "29-gene signature PCA in Brazil dataset", outputPDF = TRUE, outputName = "29-gene Brazil PCA.pdf")
+
+
+
+
+
+
+counts.africa.brazil.final.2 <- Cbind_Df(counts.africa.baseline.filtered[,-c(34,64)], counts.brazil.all.norm.combat$all)
+counts.africa.brazil.final.2.norm <- deseq2_norm_rle(counts.africa.brazil.final.2)
+
+
+
+
+counts.africa.brazil.final.2.norm.combat.withinBrazil <- Combat_No_Ref(df = counts.africa.brazil.final.2.norm, batch = c(rep("africa", 142), rep("brazil", 37)),first = "africa", mean.only = F)
+
+
+
+df.train.2 = counts.africa.brazil.final.2.norm.combat.withinBrazil$a
+df.test.2 = counts.africa.brazil.final.2.norm.combat.withinBrazil$b
+
+## remove subclinical from progressors
+
+
+df.test.2.rs = df.test.2[,-c(12:16)]
+
+
+plot_pheatmap(df.test.2.rs[signature.africa,], treatment.brazil.all[-c(12:16, 38:39)], rowScaling = TRUE, log2Trans = FALSE,showColName = F, outputPDF = T, title = "29-gene signature expression heatmap in Brazil", outputName = "29-gene Brazil Heatmap remove subclinical.pdf")
+
+plot_PCA_new(df.test.2.rs[signature.africa,], treatment.brazil.all[-c(12:16, 38:39)], title = "29-gene signature PCA in Brazil dataset", outputPDF = TRUE, outputName = "29-gene Brazil PCA remove subclinical.pdf")
+
+
+
 
 ```
 
 #### Final Evaluation: zak and africa-29 on old Brazil progressor vs. non-progressor(LTBI)
 ```{r}
+
 # define parameters
 n.boot <- 50
 set.seed(1)
-eva.africa <- list()
-eva.zak <- list()
+eva.africa.1 <- list()
+eva.zak.1 <- list()
 
 # sampling bootstrap index
-index.boot.list <- list()
+index.boot.list.1 <- list()
 for (i in 1:n.boot){
-  index.boot.list[[i]] <- sample(1:21, size = 21, replace = T)
+  index.boot.list.1[[i]] <- sample(1:37, size = 37, replace = T)
 }
 
 # start bootstrap evaluation
 for (index in 1:n.boot){
   print(index)
   # bootstrap sampling
-  df.tmp <- tb.data.list$df.test[,index.boot.list[[index]]]
-  y.tmp <- tb.data.list$meta.brazil.old$Label.Binary.WithSC.num[index.boot.list[[index]]]
+  df.tmp <- df.test.2[,index.boot.list.1[[index]]]
+  y.tmp <- treatment.brazil.all.num[-c(38:39)][index.boot.list.1[[index]]]
   # evaluate
-  evaluate.africa.29.tmp <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = tb.data.list$df.train, y.train = tb.data.list$meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = tb.data.list$signature.africa, seed = 1)
-  evaluate.zak.16.tmp <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = tb.data.list$df.train, y.train = tb.data.list$meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = tb.data.list$signature.zak, seed = 1)
-  eva.africa[[index]] <- evaluate.africa.29.tmp
-  eva.zak[[index]] <- evaluate.zak.16.tmp
+  evaluate.africa.29.tmp <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.2, y.train = meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = signature.africa, seed = 1)
+  evaluate.zak.16.tmp <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.2, y.train = meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = signature.zak, seed = 1)
+  eva.africa.1[[index]] <- evaluate.africa.29.tmp
+  eva.zak.1[[index]] <- evaluate.zak.16.tmp
 }
 
 
 # get bootstrap y list
-y.list <- list()
+y.list.1 <- list()
 for (i in 1:n.boot){
-  y.list[[i]] <- tb.data.list$meta.brazil.old$Label.Binary.WithSC.num[index.boot.list[[i]]]
+  y.list.1[[i]] <- treatment.brazil.all.num[-c(38:39)][index.boot.list.1[[i]]]
 }
 
 # final evaluate
-output.africa.signature <- Get_Classification_Evaluation(eva.list = eva.africa, response.list = y.list)
-output.zak.signature <- Get_Classification_Evaluation(eva.list = eva.zak, response.list = y.list)
+output.africa.signature.4 <- Get_Classification_Evaluation(eva.list = eva.africa.1, response.list = y.list.1)
+output.zak.signature.4 <- Get_Classification_Evaluation(eva.list = eva.zak.1, response.list = y.list.1)
+
+saveRDS(list(output.africa.signature.4 = output.africa.signature.4, output.zak.signature.4 = output.zak.signature.4), "new_brazil.rds")
 
 
-saveRDS(list(eva.africa = eva.africa, eva.zak = eva.zak, output.africa.signature = output.africa.signature, output.zak.signature = output.zak.signature), "Brazil_Test_output.rds")
+```
+
+
+
+
+#### Final Evaluation: RISK4 on old Brazil progressor vs. non-progressor(LTBI)
+```{r}
+
+# define parameters
+n.boot <- 50
+set.seed(1)
+eva.risk4 <- list()
+
+# sampling bootstrap index
+index.boot.list.risk4 <- list()
+for (i in 1:n.boot){
+  index.boot.list.risk4[[i]] <- sample(1:37, size = 37, replace = T)
+}
+
+# start bootstrap evaluation
+for (index in 1:n.boot){
+  print(index)
+  # bootstrap sampling
+  df.tmp <- df.test.2[,index.boot.list.risk4[[index]]]
+  y.tmp <- treatment.brazil.all.num[-c(38:39)][index.boot.list.risk4[[index]]]
+  # evaluate
+
+  evaluate.risk4.tmp <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.2, y.train = meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = c("GAS6", "SEPT4", "BLK", "CD1C"), seed = 1)
+
+  eva.risk4[[index]] <- evaluate.risk4.tmp
+}
+
+
+# get bootstrap y list
+y.list.risk4 <- list()
+for (i in 1:n.boot){
+  y.list.risk4[[i]] <- treatment.brazil.all.num[-c(38:39)][index.boot.list.risk4[[i]]]
+}
+
+# final evaluate
+output.risk4 <- Get_Classification_Evaluation(eva.list = eva.risk4, response.list = y.list.risk4)
+
+
+
+
+### remove subclinical
+
+
+# define parameters
+n.boot <- 50
+set.seed(1)
+eva.rs.risk4 <- list()
+
+# sampling bootstrap index
+index.boot.list.rs.risk4 <- list()
+for (i in 1:n.boot){
+  index.boot.list.rs.risk4[[i]] <- sample(1:32, size = 32, replace = T)
+}
+
+# start bootstrap evaluation
+for (index in 1:n.boot){
+  print(index)
+  # bootstrap sampling
+  df.tmp <- df.test.2.rs[,index.boot.list.rs.risk4[[index]]]
+  y.tmp <- treatment.brazil.all.num[-c(12:16, 38:39)][index.boot.list.rs.risk4[[index]]]
+  # evaluate
+  evaluate.rs.risk4.tmp <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.2, y.train = meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature =  c("GAS6", "SEPT4", "BLK", "CD1C"), seed = 1)
+
+  eva.rs.risk4[[index]] <- evaluate.rs.risk4.tmp
+}
+
+
+# get bootstrap y list
+y.list.rs.risk4 <- list()
+for (i in 1:n.boot){
+  y.list.rs.risk4[[i]] <- treatment.brazil.all.num[-c(12:16,38:39)][index.boot.list.rs.risk4[[i]]]
+}
+
+# final evaluate
+output.rs.risk4 <- Get_Classification_Evaluation(eva.list = eva.rs.risk4, response.list = y.list.rs.risk4)
+
+
+
+
+saveRDS(list(output.rs.risk4 = output.rs.risk4), "risk4_prog_vs_nonprog.rds")
+
+
+
 
 
 
 
 ```
+
+
+
 
 #### Final Evaluation: zak and africa-29 on old Brazil TB vs. LTBI
 ```{r}
@@ -862,18 +1343,18 @@ eva.zak.2 <- list()
 # sampling bootstrap index
 index.boot.list.2 <- list()
 for (i in 1:n.boot.2){
-  index.boot.list.2[[i]] <- sample(1:16, size = 16, replace = T)
+  index.boot.list.2[[i]] <- sample(1:35, size = 35, replace = T)
 }
 
 # start bootstrap evaluation
 for (index in 1:n.boot.2){
   print(index)
   # bootstrap sampling
-  df.tmp <- df.test.2[,index.boot.list.2[[index]]]
-  y.tmp <- treatments.brazil.old.TBvsLTBI.num[index.boot.list.2[[index]]]
+  df.tmp <- df.test.tb.vs.ltbi.new[,index.boot.list.2[[index]]]
+  y.tmp <- treatments.brazil.TBvs.LTBI.more.num.new[index.boot.list.2[[index]]]
   # evaluate
-  evaluate.africa.29.tmp <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.2, y.train = tb.data.list$meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = tb.data.list$signature.africa, seed = 1)
-  evaluate.zak.16.tmp <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.2, y.train = tb.data.list$meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = tb.data.list$signature.zak, seed = 1)
+  evaluate.africa.29.tmp <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.tb.vs.ltbi.new, y.train = meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = signature.africa, seed = 1)
+  evaluate.zak.16.tmp <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.tb.vs.ltbi.new, y.train = meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = signature.zak, seed = 1)
   eva.africa.2[[index]] <- evaluate.africa.29.tmp
   eva.zak.2[[index]] <- evaluate.zak.16.tmp
 }
@@ -882,7 +1363,7 @@ for (index in 1:n.boot.2){
 # get bootstrap y list
 y.list.2 <- list()
 for (i in 1:n.boot.2){
-  y.list.2[[i]] <- treatments.brazil.old.TBvsLTBI.num[index.boot.list.2[[i]]]
+  y.list.2[[i]] <- treatments.brazil.TBvs.LTBI.more.num.new[index.boot.list.2[[i]]]
 }
 
 # final evaluate
@@ -891,7 +1372,197 @@ output.zak.signature.2 <- Get_Classification_Evaluation(eva.list = eva.zak.2, re
 
 
 
-saveRDS(list(eva.africa.2 = eva.africa.2, eva.zak.2 = eva.zak.2, output.africa.signature.2 = output.africa.signature.2, output.zak.signature.2 = output.zak.signature.2), "Brazil_Test_TB_vs_LTBI_output.rds")
+saveRDS(list(eva.africa.2 = eva.africa.2, eva.zak.2 = eva.zak.2, output.africa.signature.2 = output.africa.signature.2, output.zak.signature.2 = output.zak.signature.2), "Brazil_Test_TB_vs_LTBI_output_new.rds")
+
+
+
+```
+
+#### Final Evaluation: check other TB signature
+```{r}
+
+
+
+
+# define parameters
+n.boot <- 50
+set.seed(1)
+eva.jacobsen <- list()
+eva.sweeney <- list()
+eva.kaforou <- list()
+eva.berry.393 <- list()
+eva.berry.86 <- list()
+eva.sambarey <- list()
+# start bootstrap evaluation
+for (index in 1:n.boot){
+  print(index)
+  # bootstrap sampling
+  df.tmp <- df.test.2[,index.boot.list[[index]]]
+  y.tmp <- treatment.brazil.all.num[-c(38:39)][index.boot.list[[index]]]
+  # evaluate
+  eva.jacobsen[[index]]  <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.2, y.train = meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = tb.signature.list$jacobsen, seed = 1)
+  eva.sweeney[[index]] <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.2, y.train = meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = tb.signature.list$sweeney, seed = 1)
+  eva.kaforou[[index]]  <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.2, y.train = meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = tb.signature.list$kaforou.27, seed = 1)
+  eva.berry.393[[index]] <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.2, y.train = meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = tb.signature.list$berry.393, seed = 1)
+  eva.berry.86[[index]] <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.2, y.train = meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = tb.signature.list$berry.86, seed = 1)
+  eva.sambarey[[index]] <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.2, y.train = meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = tb.signature.list$sambarey, seed = 1)
+}
+
+
+
+
+
+# final evaluate
+output.jacobsen.signature <- Get_Classification_Evaluation(eva.list = eva.jacobsen, response.list = y.list)
+output.sweeney.signature <- Get_Classification_Evaluation(eva.list = eva.sweeney, response.list = y.list)
+output.berry.393.signature <- Get_Classification_Evaluation(eva.list = eva.berry.393, response.list = y.list)
+output.berry.86.signature <- Get_Classification_Evaluation(eva.list = eva.berry.86, response.list = y.list)
+output.kaforou.signature <- Get_Classification_Evaluation(eva.list = eva.kaforou, response.list = y.list)
+output.sambarey.signature <- Get_Classification_Evaluation(eva.list = eva.sambarey, response.list = y.list)
+
+saveRDS(list(output.jacobsen.signature, output.sweeney.signature, output.berry.393.signature, output.berry.86.signature, output.kaforou.signature, output.sambarey.signature), "other_signature_prog_vs_nonprog.rds")
+
+
+
+
+
+
+### TB. vs. LTBI
+
+
+treatments.brazil.TBvs.LTBI.more.num <- as.numeric(treatments.brazil.TBvs.LTBI.more.num)
+
+treatments.brazil.TBvs.LTBI.more.num.new <- c(treatments.brazil.TBvs.LTBI.more.num, rep(0,12))
+
+n.boot.2 <- 50
+
+eva.jacobsen.2 <- list()
+eva.sweeney.2 <- list()
+eva.kaforou.2 <- list()
+eva.berry.393.2 <- list()
+eva.berry.86.2 <- list()
+eva.sambarey.2 <- list()
+# start bootstrap evaluation
+for (index in 1:n.boot.2){
+  print(index)
+  # bootstrap sampling
+  df.tmp <- df.test.tb.vs.ltbi.new[,index.boot.list.2[[index]]]
+  y.tmp <- treatments.brazil.TBvs.LTBI.more.num.new[index.boot.list.2[[index]]]
+  # evaluate
+    eva.jacobsen.2[[index]]  <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.tb.vs.ltbi.new, y.train = meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = tb.signature.list$jacobsen, seed = 1)
+  eva.sweeney.2[[index]] <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.tb.vs.ltbi.new, y.train = meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = tb.signature.list$sweeney, seed = 1)
+  eva.kaforou.2[[index]]  <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.tb.vs.ltbi.new, y.train = meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = tb.signature.list$kaforou.27, seed = 1)
+  eva.berry.393.2[[index]] <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.tb.vs.ltbi.new, y.train = meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = tb.signature.list$berry.393, seed = 1)
+  eva.berry.86.2[[index]] <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.tb.vs.ltbi.new, y.train = meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = tb.signature.list$berry.86, seed = 1)
+  eva.sambarey.2[[index]] <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.tb.vs.ltbi.new, y.train = meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = tb.signature.list$sambarey, seed = 1)
+
+}
+
+# final evaluate
+output.jacobsen.signature.2 <- Get_Classification_Evaluation(eva.list = eva.jacobsen.2, response.list = y.list.2)
+output.sweeney.signature.2 <- Get_Classification_Evaluation(eva.list = eva.sweeney.2, response.list = y.list.2)
+output.berry.393.signature.2 <- Get_Classification_Evaluation(eva.list = eva.berry.393.2, response.list = y.list.2)
+output.berry.86.signature.2 <- Get_Classification_Evaluation(eva.list = eva.berry.86.2, response.list = y.list.2)
+output.kaforou.signature.2 <- Get_Classification_Evaluation(eva.list = eva.kaforou.2, response.list = y.list.2)
+output.sambarey.signature.2 <- Get_Classification_Evaluation(eva.list = eva.sambarey.2, response.list = y.list.2)
+
+saveRDS(list(output.jacobsen.signature.2 = output.jacobsen.signature.2, output.sweeney.signature.2 = output.sweeney.signature.2, output.berry.393.signature.2 = output.berry.393.signature.2, output.berry.86.signature.2 = output.berry.86.signature.2, output.kaforou.signature.2 = output.kaforou.signature.2, output.sambarey.signature.2 = output.sambarey.signature.2 ), "Brazil_Test_TB_vs_LTBI_output_other_signature_new.rds")
+
+
+
+
+
+
+
+### prog. vs. non-prog, removing all subclininal samples (Remove Subclinical: rs)
+
+
+# define parameters
+n.boot <- 50
+set.seed(1)
+eva.africa.rs <- list()
+eva.zak.rs <- list()
+
+# sampling bootstrap index
+index.boot.list.rs <- list()
+for (i in 1:n.boot){
+  index.boot.list.rs[[i]] <- sample(1:32, size = 32, replace = T)
+}
+
+# start bootstrap evaluation
+for (index in 1:n.boot){
+  print(index)
+  # bootstrap sampling
+  df.tmp <- df.test.2.rs[,index.boot.list.rs[[index]]]
+  y.tmp <- treatment.brazil.all.num[-c(12:16, 38:39)][index.boot.list.rs[[index]]]
+  # evaluate
+  evaluate.africa.29.tmp <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.2, y.train = meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = signature.africa, seed = 1)
+  evaluate.zak.16.tmp <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.2, y.train = meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = signature.zak, seed = 1)
+  eva.africa.rs[[index]] <- evaluate.africa.29.tmp
+  eva.zak.rs[[index]] <- evaluate.zak.16.tmp
+}
+
+
+# get bootstrap y list
+y.list.rs <- list()
+for (i in 1:n.boot){
+  y.list.rs[[i]] <- treatment.brazil.all.num[-c(12:16,38:39)][index.boot.list.rs[[i]]]
+}
+
+# final evaluate
+output.africa.signature.rs <- Get_Classification_Evaluation(eva.list = eva.africa.rs, response.list = y.list.rs)
+output.zak.signature.rs <- Get_Classification_Evaluation(eva.list = eva.zak.rs, response.list = y.list.rs)
+
+saveRDS(list(output.africa.signature.rs = output.africa.signature.rs, output.zak.signature.rs = output.zak.signature.rs), "new_brazil_prog_vs_nonprog_remobe_subclinical_zak_and_29.rds")
+
+
+
+## other signatures
+
+# define parameters
+n.boot <- 50
+set.seed(1)
+eva.jacobsen.rs <- list()
+eva.sweeney.rs <- list()
+eva.kaforou.rs <- list()
+eva.berry.393.rs <- list()
+eva.berry.86.rs <- list()
+eva.sambarey.rs <- list()
+# start bootstrap evaluation
+for (index in 1:n.boot){
+  print(index)
+  # bootstrap sampling
+  df.tmp <- df.test.2[,index.boot.list.rs[[index]]]
+  y.tmp <- treatment.brazil.all.num[-c(12:16,38:39)][index.boot.list.rs[[index]]]
+  # evaluate
+  eva.jacobsen.rs[[index]]  <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.2, y.train = meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = tb.signature.list$jacobsen, seed = 1)
+  eva.sweeney.rs[[index]] <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.2, y.train = meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = tb.signature.list$sweeney, seed = 1)
+  eva.kaforou.rs[[index]]  <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.2, y.train = meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = tb.signature.list$kaforou.27, seed = 1)
+  eva.berry.393.rs[[index]] <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.2, y.train = meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = tb.signature.list$berry.393, seed = 1)
+  eva.berry.86.rs[[index]] <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.2, y.train = meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = tb.signature.list$berry.86, seed = 1)
+  eva.sambarey.rs[[index]] <- Model_AUC_Multiple(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.2, y.train = meta.africa.baseline$Label.num, df.test = df.tmp, y.test = y.tmp, signature = tb.signature.list$sambarey, seed = 1)
+}
+
+
+
+
+
+# final evaluate
+output.jacobsen.signature.rs <- Get_Classification_Evaluation(eva.list = eva.jacobsen.rs, response.list = y.list.rs)
+output.sweeney.signature.rs <- Get_Classification_Evaluation(eva.list = eva.sweeney.rs, response.list = y.list.rs)
+output.berry.393.signature.rs <- Get_Classification_Evaluation(eva.list = eva.berry.393.rs, response.list = y.list.rs)
+output.berry.86.signature.rs <- Get_Classification_Evaluation(eva.list = eva.berry.86.rs, response.list = y.list.rs)
+output.kaforou.signature.rs <- Get_Classification_Evaluation(eva.list = eva.kaforou.rs, response.list = y.list.rs)
+output.sambarey.signature.rs <- Get_Classification_Evaluation(eva.list = eva.sambarey.rs, response.list = y.list.rs)
+
+saveRDS(list(output.jacobsen.signature.rs, output.sweeney.signature.rs, output.berry.393.signature.rs, output.berry.86.signature.rs, output.kaforou.signature.rs, output.sambarey.signature.rs), "other_signature_prog_vs_nonprog_remove_subclinical.rds")
+
+
+
+
+
+
+
 
 
 
@@ -910,99 +1581,56 @@ saveRDS(list(output.africa.signature.3 = output.africa.signature.3, output.zak.s
 
 ```
 
-#### Get coef for 29-gene signature using glmnet
-```{r}
-x.train <- t(as.matrix(tb.data.list$df.train[tb.data.list$signature.africa,]))
-cvfit = cv.glmnet(x.train, tb.data.list$meta.africa.baseline$Label.num, family = "binomial", type.measure = "class", alpha = 0)
-signature.coef <- coef(cvfit)
 
 
-
-```
 
 
 #### ROC
 
-4 plots together.
-In each ROC figure, plot ROC of 4 models.
-
-* Receiver operating characteristic (ROC) curves for predicting Brazilian progressors vs. non-progressors using:  (1) new XX-gene signature; (2) Zak 16-gene signature
-
-* Receiver operating characteristic (ROC) curves for predicting Brazilian active TB patients vs. non-progressors using:  (3) new XX-gene signature; (4) Zak 16-gene signature
-
-
-Note:
-For previous evaluation step, we used bootstrap to get multiple testing set. But to plot the ROC, we need to predict the one entire testing set.
-
 ```{r}
 
-pdf("ROC of 29-gene signature and Zak 16-gene signature.pdf", width = 18, height = 18)
-par(mfrow=c(2,2))
 
-  evaluate.africa.29.roc <- Model_AUC_Multiple_ROC(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = tb.data.list$df.train, y.train = tb.data.list$meta.africa.baseline$Label.num, df.test = tb.data.list$df.test, y.test = tb.data.list$meta.brazil.old$Label.Binary.WithSC.num, signature = tb.data.list$signature.africa, seed = 1, ROC.title = "ROC for predicting Brazilian progressors vs. non-progressors using 29-gene signature")
+pdf("ROC of 29-gene signature and Zak 16-gene signature FINAL.pdf", width = 18, height = 18)
+par(mfrow=c(2,3))
 
+  evaluate.africa.29.roc <- Model_AUC_Multiple_ROC(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.2, y.train = meta.africa.baseline$Label.num, df.test = df.test.2, y.test = treatment.brazil.all.num[-c(38:39)], signature = signature.africa, seed = 1, ROC.title = "ROC for predicting Brazilian progressors vs. non-progressors using 29-gene signature")
 
-  evaluate.zak.16.roc <- Model_AUC_Multiple_ROC(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = tb.data.list$df.train, y.train = tb.data.list$meta.africa.baseline$Label.num, df.test = tb.data.list$df.test, y.test = tb.data.list$meta.brazil.old$Label.Binary.WithSC.num, signature = tb.data.list$signature.zak, seed = 1, ROC.title = "ROC for predicting Brazilian progressors vs. non-progressors using Zak 16-gene signature")
-
-  evaluate.africa.29.TBvsLTBI.roc <- Model_AUC_Multiple_ROC(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = tb.data.list$df.train, y.train = tb.data.list$meta.africa.baseline$Label.num, df.test = df.test.2, y.test = treatments.brazil.old.TBvsLTBI.num, signature = tb.data.list$signature.africa, seed = 1, ROC.title = "ROC for predicting Brazilian active TB vs. non-progressors using 29-gene signature")
+    evaluate.africa.29.remove.sc.roc <- Model_AUC_Multiple_ROC(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.2, y.train = meta.africa.baseline$Label.num, df.test = df.test.2.rs, y.test = treatment.brazil.all.num[-c(12:16,38:39)], signature = signature.africa, seed = 1, ROC.title = "prog vs. non-prog using 29-gene signature, SC removed")
 
 
-  evaluate.zak.16.TBvsLTBI.roc <- Model_AUC_Multiple_ROC(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = tb.data.list$df.train, y.train = tb.data.list$meta.africa.baseline$Label.num, df.test = df.test.2, y.test = treatments.brazil.old.TBvsLTBI.num, signature = tb.data.list$signature.zak, seed = 1, ROC.title = "ROC for predicting Brazilian active TB vs. non-progressors using Zak 16-gene signature")
+  evaluate.africa.29.TBvsLTBI.roc <- Model_AUC_Multiple_ROC(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.tb.vs.ltbi.new, y.train = meta.africa.baseline$Label.num, df.test = df.test.tb.vs.ltbi.new, y.test = treatments.brazil.TBvs.LTBI.more.num.new, signature = signature.africa, seed = 1, ROC.title = "ROC for predicting Brazilian active TB vs. non-progressors using 29-gene signature")
+
+    evaluate.zak.16.roc <- Model_AUC_Multiple_ROC(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train, y.train = meta.africa.baseline$Label.num, df.test = df.test.2, y.test = treatment.brazil.all.num[-c(38:39)], signature = signature.zak, seed = 1, ROC.title = "ROC for predicting Brazilian progressors vs. non-progressors using Zak 16-gene signature")
+
+
+      evaluate.zak.16.remove.sc.roc <- Model_AUC_Multiple_ROC(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train, y.train = meta.africa.baseline$Label.num, df.test = df.test.2.rs, y.test = treatment.brazil.all.num[-c(12:16,38:39)], signature = signature.zak, seed = 1, ROC.title = "prog vs. non-prog using Zak 16-gene signature, SC removed")
+
+  evaluate.zak.16.TBvsLTBI.roc <- Model_AUC_Multiple_ROC(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.tb.vs.ltbi.new, y.train = meta.africa.baseline$Label.num, df.test = df.test.tb.vs.ltbi.new, y.test = treatments.brazil.TBvs.LTBI.more.num.new, signature = signature.zak, seed = 1, ROC.title = "ROC for predicting Brazilian active TB vs. non-progressors using Zak 16-gene signature")
 
 dev.off()  
 
 
-```
-
-
-
-#### plots for manuscript
-```{r}
-plot_pheatmap(counts.brazil.old.norm[tb.data.list$signature.africa,], meta.brazil$Label.Binary.WithSC, rowScaling = TRUE, log2Trans = FALSE, outputPDF = T, title = "29-gene signature expression heatmap in Brazil dataset", outputName = "29-gene Brazil Heatmap.pdf")
-
-plot_pheatmap(counts.brazil.old.norm[tb.data.list$signature.africa,], meta.brazil$Label.Binary.WithSC, rowScaling = TRUE, log2Trans = FALSE,showColName = F, outputPDF = T, title = "29-gene signature expression heatmap in Brazil dataset", outputName = "29-gene Brazil Heatmap noColnames.pdf")
-
-plot_PCA_new(counts.brazil.old.norm[tb.data.list$signature.africa,], meta.brazil$Label.Binary.WithSC, title = "29-gene signature PCA in Brazil dataset", outputPDF = TRUE, outputName = "29-gene Brazil PCA.pdf")
 
 
 
 
+pdf("ROC of 29-gene signature and Zak 16-gene signature FINAL_2x2.pdf", width = 18, height = 18)
+par(mfrow=c(2,2))
 
-```
+  evaluate.africa.29.roc <- Model_AUC_Multiple_ROC(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.2, y.train = meta.africa.baseline$Label.num, df.test = df.test.2, y.test = treatment.brazil.all.num[-c(38:39)], signature = signature.africa, seed = 1, ROC.title = "ROC for predicting Brazilian progressors vs. non-progressors using 29-gene signature")
 
-
-
-
-
-#### alignment stats
-```{r}
-brazil.alignment <- read.table("QC/alignment_brazil.txt", sep = "\t", header = T, stringsAsFactors = FALSE)
-brazil.alignment <- as_tibble(brazil.alignment)
-for (i in 1:nrow(brazil.alignment)){
-  brazil.alignment$Sample.Name[i] <- str_match(brazil.alignment$Sample.Name[i], "(.+)L")[2]
-}
-brazil.alignment <- brazil.alignment %>% group_by(Sample.Name) %>% summarise(Total.Reads = sum(Total.Reads), Aligned.Reads = sum(Aligned.Reads)) %>% mutate(Proportion = Aligned.Reads / Total.Reads)
+    evaluate.africa.29.remove.sc.roc <- Model_AUC_Multiple_ROC(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train.2, y.train = meta.africa.baseline$Label.num, df.test = df.test.2.rs, y.test = treatment.brazil.all.num[-c(12:16,38:39)], signature = signature.africa, seed = 1, ROC.title = "prog vs. non-prog using 29-gene signature, SC removed")
 
 
-write.table(brazil.alignment, "alignment_brazil_collapsed.txt", sep = "\t", quote = FALSE)
-mean(brazil.alignment$Proportion)
+
+    evaluate.zak.16.roc <- Model_AUC_Multiple_ROC(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train, y.train = meta.africa.baseline$Label.num, df.test = df.test.2, y.test = treatment.brazil.all.num[-c(38:39)], signature = signature.zak, seed = 1, ROC.title = "ROC for predicting Brazilian progressors vs. non-progressors using Zak 16-gene signature")
 
 
-####
-africa.alignment <- read.table("QC/alignment_africa.txt", sep = "\t", header = T, stringsAsFactors = FALSE)
-for (i in 1:nrow(africa.alignment)){
-  africa.alignment$Proportion[i] <- str_match(africa.alignment$Proportion[i], "(.+)%")[2]
-}
-mean(as.numeric(africa.alignment$Proportion))
+      evaluate.zak.16.remove.sc.roc <- Model_AUC_Multiple_ROC(model.name.vec = c("glmnet", "svmLinear", "ranger", "xgbLinear"), df.train = df.train, y.train = meta.africa.baseline$Label.num, df.test = df.test.2.rs, y.test = treatment.brazil.all.num[-c(12:16,38:39)], signature = signature.zak, seed = 1, ROC.title = "prog vs. non-prog using Zak 16-gene signature, SC removed")
 
+
+
+dev.off()  
 
 ```
 
-
-
-
-
-#### DE gene
-```{r}
-
-```
