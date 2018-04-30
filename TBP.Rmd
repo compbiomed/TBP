@@ -1,16 +1,6 @@
 ---
 title: "Tuberculosis Progression Signature Identification and Classification Model"
-output: html_notebook
-author:
-- Yue Zhao
-- Section of Computational Biomedicine, Boston University School of Medicine
-date: "`r format(Sys.time(), '%d %B %Y')`"
-
 ---
-
-
-
-##### Note: Please click the "Code" button in upper right corner, and choose "Hide All Code"
 
 ### Introduction
 
@@ -702,7 +692,7 @@ meta.africa.baseline$batch = "africa"
 
 # cut age into bins
 age.vec <- c(meta.brazil$Age, meta.africa.baseline$Age)
-# how to cut? 4 bins. 
+# how to cut? 4 bins.
 levels.age <- levels(cut(age.vec, breaks = 4))
 # ordinal factor
 age.vec.factor <- as.factor(as.numeric(cut(age.vec, breaks = 4)))
@@ -1633,4 +1623,3 @@ par(mfrow=c(2,2))
 dev.off()  
 
 ```
-
